@@ -1,5 +1,5 @@
 const pgp = require("pg-promise")();
-const bcrypt = require("bcrypt");
+const argon2 = require("argon2");
 
 // development creds for local postgresql database
 const cn =  {
@@ -14,13 +14,12 @@ const cn =  {
 const db = pgp(cn);
 
 class User {
-	constructor(saltRounds, minUsernameLength, minPasswordLength) {
-		this.saltRounds = saltRounds || 12;
+	constructor(minUsernameLength, minPasswordLength) {
 		this.minUsernameLength = minUsernameLength || 4;
 		this.minPasswordLength = minPasswordLength || 6;
 	}
 
-	createUser(username, email, password, done) {
+	async createUser(username, email, password, done) {
 		// email regex pattern from http://emailregex.com based on RFC 5322
 		if (!email.match(/^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$/)) {
 			const err = new Error("Email format is incorrect");
@@ -45,31 +44,45 @@ class User {
 			return done(err, null);
 		}
 
-		db.one("SELECT * FROM users WHERE username = $1",
-			[username])
-			.then(() => {
-				const err = new Error("Username already exist");
-				return done(err, null);
+		argon2.hash(password)
+			.then(hash => {
+				db.one("INSERT INTO users(username, email, password) VALUES ($1, $2, $3) RETURNING id",
+					[username, email, hash])
+					.then(data => {
+						return done(null, data.id);
+					})
+					.catch(err => {
+						return done(err, null);
+					})
 			})
-			.catch(() => {
-				// const saltRounds = 12
-				// console.log("Error:", error);
-				bcrypt.genSalt(saltRounds, function(err, salt) {
-					// save hash to database
-					bcrypt.hash(password, salt, function(err, hash) {
-						// console.log("salt: " + salt + "... hash: " + hash);
-						db.one("INSERT INTO users(username, email, password) VALUES ($1, $2, $3) RETURNING id",
-							[username, email, hash])
-							.then(data => {
-								return done(null, data.id);
-							})
-							.catch(error => {
-								return done(error, null);
-							})
+			.catch(err => {
+				return done(err, null);
+			})				
+	}
+
+	authenticateUser(username, password, done) {
+		db.one("SELECT id,username,password FROM users WHERE username = $1",
+			[username])
+			.then(data => {
+				argon2.verify(data.password, password)
+					.then(passwordMatch => {
+						if (passwordMatch) {
+							console.log("Correct password");
+						} else {
+							console.log("Wrong password");
+						}
+					})
+					.catch(err => {
+						return done(err, null);
 					});
-				})
+			})
+			.catch(error => {
+				// console.log("error: " + error);
+				return done(error, null);
 			})
 	}
+
+	
 }
 
 module.exports = User;
